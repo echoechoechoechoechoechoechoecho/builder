@@ -1,0 +1,72 @@
+#!/bin/sh
+#
+# Botslab C213: TMI8152 (SPI motor + IR-cut driver) and helper daemons.
+#
+# fw_printenv knobs (all optional):
+#   motor_hmaxstep  pan range, steps           (default 8000 = stock 500 counts x 16)
+#   motor_vmaxstep  tilt range, steps          (default 3200 = stock 200 counts x 16)
+#   motor_xcenter   pan home, steps            (default 4000 = stock 250 from the stop)
+#   motor_ycenter   tilt home, steps           (default 960 = stock 60 from the low stop)
+#   motor_invert    "x", "y" or "xy"           (default none)
+#   motor_xch/ych   TMI channel of pan / tilt  (default 0 / 1, as stock)
+#   ircut_day       value for day: 0 or 1      (default 1)
+#   motor_unit      WebUI pad step, steps      (default 40, see /usr/bin/motor)
+#   motor_speed     WebUI pad speed, 1..900    (default 900)
+
+getenv() { fw_printenv -n "$1" 2>/dev/null; }
+
+# WebUI PTZ: the "motor" backend runs /usr/bin/motor <profile> <h> <v>.
+# Set once, so a camera configured before this existed gets it too.
+ptz_env() {
+	[ -n "$(getenv ptz_control)" ] || fw_setenv ptz_control motor
+	[ -n "$(getenv ptz_profile)" ] || fw_setenv ptz_profile c213
+	[ -n "$(getenv ptz_caps)" ] || fw_setenv ptz_caps "pan tilt"
+}
+
+# majestic used to drive GPIO63 as the speaker pin and so switched the TMI
+# power stage off; the amplifier is GPIO53.
+speaker_fix() {
+	[ "$(cli -g .audio.speakerPin 2>/dev/null)" = 63 ] && cli -s .audio.speakerPin 53
+	gpio set 63 >/dev/null
+}
+
+start() {
+	ptz_env
+	speaker_fix
+	modprobe tmi8152_spi_dev || {
+		echo "c213: TMI8152 not found on SPI0" | logger -s -t c213
+		return 1
+	}
+
+	inv=$(getenv motor_invert)
+	modprobe tmi8152_motor \
+		hmaxstep="$(getenv motor_hmaxstep || echo 8000)" \
+		vmaxstep="$(getenv motor_vmaxstep || echo 3200)" \
+		center_x_override="$(getenv motor_xcenter || echo 4000)" \
+		center_y_override="$(getenv motor_ycenter || echo 960)" \
+		invert_x="$(case "$inv" in *x*) echo 1;; *) echo 0;; esac)" \
+		invert_y="$(case "$inv" in *y*) echo 1;; *) echo 0;; esac)" \
+		x_channel="$(getenv motor_xch || echo 0)" \
+		y_channel="$(getenv motor_ych || echo 1)"
+
+	# Homing: the driver waits for MOTOR_RESET with zero limits.
+	(ingenic-motor -r >/dev/null 2>&1 &)
+
+	start-stop-daemon -S -b -m -p /var/run/ircut-sync.pid -x /usr/sbin/ircut-sync
+	start-stop-daemon -S -b -m -p /var/run/resetd.pid -x /usr/sbin/resetd.sh
+}
+
+stop() {
+	start-stop-daemon -K -q -p /var/run/ircut-sync.pid
+	start-stop-daemon -K -q -p /var/run/resetd.pid
+	# Shell scripts: the pid file can miss them, the process name does not.
+	killall -q ircut-sync resetd.sh
+	rm -f /var/run/ircut-sync.pid /var/run/resetd.pid
+}
+
+case "$1" in
+	start) start ;;
+	stop) stop ;;
+	restart) stop; start ;;
+	*) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

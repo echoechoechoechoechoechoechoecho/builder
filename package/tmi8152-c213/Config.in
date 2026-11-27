@@ -1,0 +1,9 @@
+config BR2_PACKAGE_TMI8152_C213
+	bool "tmi8152-c213"
+	depends on BR2_LINUX_KERNEL
+	help
+	  TMI8152 SPI pan/tilt + IR-cut driver (Botslab C213, Ingenic T23N),
+	  https://github.com/sstepansky/tmi8152-spi-dev with OpenIPC T23 fixes.
+	  Enables CONFIG_SPI/CONFIG_JZ_SPI/CONFIG_JZ_SPI0 (SSI0 on PB27-PB30).
+	  Provides /dev/motor (Ingenic motor ioctl API) and the "ircut"
+	  parameter of tmi8152_spi_dev.

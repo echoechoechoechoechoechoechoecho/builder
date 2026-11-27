@@ -1,0 +1,49 @@
+#!/bin/sh
+#
+# The C213 IR-cut filter hangs off TMI8152 channel 5 (SPI), which majestic
+# cannot drive: it only pulses GPIO irCutPin1/2. Follow majestic's own
+# day/night state instead (night_enabled in /metrics), so the automatic switch
+# and the WebUI's Day/Night buttons (/night/on, /night/off, /night/toggle)
+# both move the filter. If /metrics cannot be read, fall back to the IR
+# illuminator pin majestic switches with night mode (backlightPin=49).
+#
+# fw_setenv ircut_day 0|1  - value written for day (default 1)
+# fw_setenv ir_led_on 0|1  - level of GPIO49 that means "IR LEDs on" (default 1)
+
+# Kernel-side parameter first: write() on the char device cannot read the
+# user buffer on this kernel ("Error copying data from user").
+DEV=/sys/module/tmi8152_spi_dev/parameters/ircut
+[ -w "$DEV" ] || DEV=/dev/tmi8152_ir_cut
+PIN=49
+DAY=$(fw_printenv -n ircut_day 2>/dev/null || echo 1)
+LED_ON=$(fw_printenv -n ir_led_on 2>/dev/null || echo 1)
+NIGHT=$((1 - DAY))
+last=""
+
+[ -e "$DEV" ] || { echo "ircut-sync: no $DEV" | logger -t ircut; exit 1; }
+
+# 1 night, 0 day, empty when unknown.
+night_state() {
+	local m
+	m=$(curl -s -m 2 http://127.0.0.1/metrics 2>/dev/null | sed -n 's/^night_enabled \([01]\)$/\1/p')
+	if [ -n "$m" ]; then
+		echo "$m"
+		return
+	fi
+	m=$(cat /sys/class/gpio/gpio$PIN/value 2>/dev/null) || return
+	[ "$m" = "$LED_ON" ] && echo 1 || echo 0
+}
+
+# Day position at start, like the stock app.
+printf %s "$DAY" > "$DEV"
+last=$DAY
+
+while sleep 2; do
+	n=$(night_state)
+	[ -n "$n" ] || continue
+	if [ "$n" = 1 ]; then want=$NIGHT; else want=$DAY; fi
+	if [ "$want" != "$last" ]; then
+		printf %s "$want" > "$DEV" && last=$want
+		logger -t ircut "filter -> $([ "$want" = "$DAY" ] && echo day || echo night)"
+	fi
+done

@@ -1,0 +1,37 @@
+#!/bin/sh
+#
+# WebUI "motor" PTZ backend for Botslab C213 (TMI8152 via /dev/motor).
+#
+#   motor <profile> <h> <v>
+#
+# j/ptz.cgi calls this with h, v in -99..99; the pad sends +-5 per press and
+# 0 0 for "centre". Each unit is motor_unit steps (fw_setenv motor_unit N,
+# default 40: 2.5 counts of the stock 500-count pan).
+#
+# fw_setenv ptz_invert "x" | "y" | "xy" | "none"  - flip the WebUI arrows
+# (default "x": the pad's pan runs opposite to the driver's +/- on C213).
+# Only the pad is flipped; homing and the driver's own directions stay as stock.
+
+[ $# -ge 3 ] || { echo "usage: motor <profile> <h> <v>" >&2; exit 2; }
+h=$2
+v=$3
+case "$h" in ''|*[!0-9-]*) echo "bad h: $h" >&2; exit 2 ;; esac
+case "$v" in ''|*[!0-9-]*) echo "bad v: $v" >&2; exit 2 ;; esac
+
+[ -c /dev/motor ] || { echo "No /dev/motor: tmi8152_motor is not loaded." >&2; exit 1; }
+
+unit=$(fw_printenv -n motor_unit 2>/dev/null)
+case "$unit" in ''|*[!0-9]*) unit=40 ;; esac
+speed=$(fw_printenv -n motor_speed 2>/dev/null)
+case "$speed" in ''|*[!0-9]*) speed=900 ;; esac
+
+if [ "$h" -eq 0 ] && [ "$v" -eq 0 ]; then
+	# Centre: the driver's home (center_x/y_override, stock 250 / 60 counts).
+	exec ingenic-motor -d b
+fi
+
+inv=$(fw_printenv -n ptz_invert 2>/dev/null) || inv=x
+case "$inv" in *x*) h=$((-h)) ;; esac
+case "$inv" in *y*) v=$((-v)) ;; esac
+
+exec ingenic-motor -d g -x $((h * unit)) -y $((v * unit)) -s "$speed"

@@ -1,0 +1,96 @@
+Subject: [PATCH] tmi8152-spi-dev: OpenIPC Ingenic T23 fixes (Botslab C213)
+
+Makes the driver work with OpenIPC on the T23 kernel (Botslab C213, TMI8152):
+
+- write() on /dev/tmi8152_ir_cut fails on this kernel ("Error copying data
+  from user", while the ioctl paths copy fine), so the IR cut is also
+  exposed as the "ircut" module parameter in sysfs.
+- struct motor_message without inversion_state, the layout OpenIPC's
+  ingenic-motor uses: MOTOR_GET_STATUS copied 4 bytes past its buffer.
+- The motor module is built as tmi8152_motor.ko: openingenic already
+  installs a motor.ko.
+
+SPI framing, motion, speed and IR-cut sequences are Thingino's, unchanged.
+
+diff --git a/Makefile b/Makefile
+index 8986dfe..f163fb1 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1,5 +1,6 @@
+ obj-m += tmi8152_spi_dev.o
+-obj-m += motor.o
++obj-m += tmi8152_motor.o
++tmi8152_motor-objs := motor.o
+ 
+ all:
+ 	$(MAKE) -C $(KSRC) M=$(PWD)	modules
+diff --git a/motor.c b/motor.c
+index 7758e56..fbd959f 100644
+--- a/motor.c
++++ b/motor.c
+@@ -730,7 +730,6 @@ static long motor_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+ 		msg.speed = motor.speed;
+ 		msg.x_max_steps = motor.x_max;
+ 		msg.y_max_steps = motor.y_max;
+-		msg.inversion_state = 0;  /* Not implemented yet */
+ 
+ 		/* Copy status to userspace */
+ 		if (copy_to_user((void __user *)arg, &msg, sizeof(msg))) {
+diff --git a/motor.h b/motor.h
+index 0669e52..c955e0e 100644
+--- a/motor.h
++++ b/motor.h
+@@ -50,7 +50,6 @@ struct motor_message {
+ 	int speed;
+ 	unsigned int x_max_steps;
+ 	unsigned int y_max_steps;
+-	unsigned int inversion_state;
+ };
+ 
+ /**
+diff --git a/tmi8152_spi_dev.c b/tmi8152_spi_dev.c
+index 2875f08..e1bf42f 100644
+--- a/tmi8152_spi_dev.c
++++ b/tmi8152_spi_dev.c
+@@ -120,6 +120,41 @@ static ssize_t tmi8152_cdev_write(struct file *filp,
+     return count;
+ }
+ 
++/*
++ * /sys/module/tmi8152_spi_dev/parameters/ircut: write 0 or 1, as to
++ * /dev/tmi8152_ir_cut. write() on the char device still fails to read the
++ * user buffer on the OpenIPC T23 kernel; a module parameter is copied by the
++ * kernel itself.
++ */
++static int ircut_param_set(const char *val, const struct kernel_param *kp)
++{
++    int v, ret;
++
++    if (kstrtoint(val, 0, &v) || (v != 0 && v != 1))
++        return -EINVAL;
++    if (!sdev)
++        return -ENODEV;
++    ret = set_ir_cut(v);
++    if (ret < 0)
++        return ret;
++    mutex_lock(&tmi8152_spi_lock);
++    dev_buff[0] = '0' + v;
++    mutex_unlock(&tmi8152_spi_lock);
++    return 0;
++}
++
++static int ircut_param_get(char *buf, const struct kernel_param *kp)
++{
++    return sprintf(buf, "%c\n", dev_buff[0] ? dev_buff[0] : '?');
++}
++
++static struct kernel_param_ops ircut_param_ops = {
++    .set = ircut_param_set,
++    .get = ircut_param_get,
++};
++module_param_cb(ircut, &ircut_param_ops, NULL, 0644);
++MODULE_PARM_DESC(ircut, "IR-cut filter: write 0 or 1");
++
+ static struct file_operations tmi8152_cdev_fops = {
+     .owner = THIS_MODULE,
+     .open = tmi8152_cdev_open,
