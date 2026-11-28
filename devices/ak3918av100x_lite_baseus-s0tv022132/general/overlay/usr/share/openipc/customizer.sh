@@ -45,5 +45,14 @@ cli -s .ptz.enabled true
 cli -s .ptz.actuator gpiostep
 fw_setenv ptz_control gpiostep
 fw_setenv ptz_caps 'pan tilt'
+# Microphone and speaker on the SoC codec, 8 kHz as stock. ak_pcm never
+# drives the speaker amplifier (GPIO 37, the device tree's speak-gpios), so
+# majestic has to. The SDK hands over 256-sample frames, which Opus cannot
+# frame at 8 kHz, so the stream carries G.711.
+cli -s .audio.enabled true
+cli -s .audio.srate 8000
+cli -s .audio.codec ulaw
+cli -s .audio.outputEnabled true
+cli -s .audio.speakerPin 37
 
 exit 0
